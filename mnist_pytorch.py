@@ -1,5 +1,5 @@
 from __future__ import print_function
-import pickle 
+import pickle
 import numpy as np
 import argparse
 import torch
@@ -49,8 +49,8 @@ kwargs = {'num_workers': 1, 'pin_memory': True} if args.cuda else {}
 
 
 print('loading data!')
-trainset_labeled = pickle.load(open("train_labeled.p", "rb"))
-validset = pickle.load(open("validation.p", "rb"))
+trainset_labeled = pickle.load(open("data/train_labeled.p", "rb"))
+validset = pickle.load(open("data/validation.p", "rb"))
 #trainset_unlabeled = pickle.load(open("train_unlabeled.p", "rb"))
 
 train_loader = torch.utils.data.DataLoader(trainset_labeled, batch_size=64, shuffle=True, **kwargs)
@@ -126,4 +126,3 @@ def test(epoch, valid_loader):
 for epoch in range(1, args.epochs + 1):
     train(epoch)
     test(epoch, valid_loader)
-
