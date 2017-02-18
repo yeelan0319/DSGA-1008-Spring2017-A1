@@ -25,3 +25,7 @@ python mnist_pytorch.py
 -Incoporate unlabeled data into this model. Try to implement some semi-supervised learning method.
 
 Note: The sample code is tested on MacOS system, CPU, torch 0.1.7, Python 2.7.13 |Anaconda 4.3.0
+
+https://discuss.pytorch.org/t/how-to-perform-finetuning-in-pytorch/419/4
+http://pytorch.org/docs/notes/autograd.html#excluding-subgraphs-from-backward
+https://discuss.pytorch.org/t/how-to-extract-features-of-an-image-from-a-trained-model/119
