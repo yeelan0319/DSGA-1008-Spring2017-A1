@@ -51,8 +51,7 @@ parser.add_argument('--training-index', type=int, default=None,
 # Run mode params
 parser.add_argument('--seed', type=int, default=1, metavar='S',
                     help='random seed (default: 1)')
-parser.add_argument('--no-cuda', action='store_true', default=False,
-                    help='enables CUDA training')
+parser.add_argument('--cuda', action='store_true', help='enables GPU training')
 parser.add_argument('--skip-unsupervised-training', action='store_true',
                     help='skip unsupervised training part')
 parser.add_argument('--lock-pretrained-params', action='store_true',
@@ -62,8 +61,10 @@ parser.add_argument('--minimal-run', action='store_true', help="run minimal vers
 # Parse args
 args = parser.parse_args()
 # Cuda
-args.cuda = not args.no_cuda and torch.cuda.is_available()
+args.cuda = args.cuda and torch.cuda.is_available()
 kwargs = {'num_workers': 1, 'pin_memory': True} if args.cuda else {}
+if args.cuda:
+  print("GPU training enabled")
 # Other args
 random.seed(args.seed)
 torch.manual_seed(args.seed)
@@ -194,7 +195,7 @@ supervised_loader = torch.utils.data.DataLoader(trainset_labeled,
 valid_loader = torch.utils.data.DataLoader(validset,
   batch_size=args.test_batch_size, shuffle=True)
 
-D = DiscriminatorNet()
+D = DiscriminatorNet() if not args.cuda else DiscriminatorNet().cuda()
 D.apply(weights_init)
 if latest_unsupervised_D_ckpt is not None:
   print("Loading discriminator model: {} ".format(latest_unsupervised_D_ckpt))
@@ -207,14 +208,14 @@ if args.skip_unsupervised_training or (latest_unsupervised_epoch >= args.unsuper
   print('Skip unsupervised training part')
 else:
   print('\n\nTrain DCGAN with 47000 unlabeled data')
-  G = GeneratorNet()
+  G = GeneratorNet() if not args.cuda else GeneratorNet().cuda()
   G.apply(weights_init)
   if latest_unsupervised_G_ckpt is not None:
     print("Loading generator model: {} ".format(latest_unsupervised_G_ckpt))
     G.load_state_dict(torch.load(latest_unsupervised_G_ckpt))
-  fixed_noise = Variable(torch.randn(1, 20))
   D_optimizer = optim.Adam(D.parameters(), lr=args.unsupervised_lr, betas = (0.5, 0.999))
   G_optimizer = optim.Adam(G.parameters(), lr=args.unsupervised_lr, betas = (0.5, 0.999))
+  fixed_noise = Variable(torch.randn(1, 20) if not args.cuda else torch.randn(1, 20).cuda())
 
   for latest_unsupervised_epoch in range(latest_unsupervised_epoch + 1,
     args.unsupervised_epochs + 1):
@@ -223,9 +224,9 @@ else:
       # (1.1) Update D network: maximize log(D(x)) + log(1 - D(G(z)))
       ###########################
       D_optimizer.zero_grad()
-      x = Variable(x)
+      x = Variable(x if not args.cuda else x.cuda())
       x_output = D(x)
-      z = Variable(torch.randn(x.size(0), 20))
+      z = Variable(torch.randn(x.size(0), 20) if not args.cuda else torch.randn(x.size(0), 20).cuda())
       gz = G(z)
       gz_output = D(gz)
       d_loss = -(torch.mean(torch.log(x_output) + torch.log(1 - gz_output)))
@@ -236,7 +237,7 @@ else:
       # (1.2) Update G network: maximize log(D(G(z)))
       ###########################
       G_optimizer.zero_grad()
-      z = Variable(torch.randn(x.size(0), 20))
+      z = Variable(torch.randn(x.size(0), 20) if not args.cuda else torch.randn(x.size(0), 20).cuda())
       gz = G(z)
       gz_output = D(gz)
       g_loss = -torch.mean(torch.log(gz_output))
@@ -299,7 +300,8 @@ if latest_supervised_epoch < args.supervised_epochs:
   # optimizer = optim.Adam(D.parameters(), lr=args.supervised_lr)
   for latest_supervised_epoch in range(latest_supervised_epoch + 1, args.supervised_epochs + 1):
     for i, (data, target) in enumerate(supervised_loader):
-      data, target = Variable(data), Variable(target)
+      data = Variable(data if not args.cuda else data.cuda())
+      target = Variable(target if not args.cuda else target.cuda())
       optimizer.zero_grad()
       output = D(data)
       loss = F.nll_loss(output, target)
@@ -320,7 +322,8 @@ D.eval()
 test_loss = 0
 correct = 0
 for data, target in valid_loader:
-  data, target = Variable(data, volatile=True), Variable(target)
+  data = Variable(data if not args.cuda else data.cuda(), volatile=True)
+  target = Variable(target if not args.cuda else data.target())
   output = D(data)
   test_loss += F.nll_loss(output, target).data[0]
   pred = output.data.max(1)[1] # get the index of the max log-probability
