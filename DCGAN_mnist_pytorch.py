@@ -49,6 +49,8 @@ parser.add_argument('--no-cuda', action='store_true', default=False,
                     help='enables CUDA training')
 parser.add_argument('--skip-unsupervised-training', action='store_true',
                     help='skip unsupervised training part')
+parser.add_argument('--lock-pretrained-params', action='store_true',
+                    help='lock pretrained params during supervised training')
 parser.add_argument('--minimal-run', action='store_true', help="run minimal version to test code")
 
 # Parse args
@@ -66,6 +68,7 @@ if args.minimal_run:
   args.unsupervised_epochs = 1
   args.supervised_epochs = 1
   args.unsupervised_training_data = 'data/train_labeled.p'
+  args.validation_data = 'data/train_labeled.p'
 
 try:
     os.makedirs(args.outdir)
@@ -211,7 +214,18 @@ D.classifier = torch.nn.Sequential(
 # (3) Update D network with labeled data
 ###########################
 print('\n\nTuning model with 3000 labeled data')
-optimizer = optim.SGD(D.parameters(), lr=args.supervised_lr, momentum=args.supervised_momentum)
+if args.lock_pretrained_params:
+  print("(Lock the pretrained params and only training the classifer)")
+  target_params = [
+    {'params': list(D.features.parameters())},
+    {'params': D.classifier.parameters(), 'lr':args.supervised_lr}
+  ]
+else:
+  target_params = [
+    {'params': D.parameters(), 'lr':args.supervised_lr}
+  ]
+optimizer = optim.SGD(target_params, lr=args.supervised_lr,
+  momentum=args.supervised_momentum)
 # optimizer = optim.Adam(D.parameters(), lr=args.supervised_lr)
 for epoch in range(1, args.supervised_epochs + 1):
   for i, (data, target) in enumerate(supervised_loader):
