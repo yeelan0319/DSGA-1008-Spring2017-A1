@@ -44,6 +44,8 @@ parser.add_argument('--output-interval', type=int, default=100, metavar='N',
                     help='how many batches to wait before logging training status')
 parser.add_argument('--no-cuda', action='store_true', default=False,
                     help='enables CUDA training')
+parser.add_argument('--skip-unsupervised-training', action="store_true",
+                    help="skip unsupervised training part")
 parser.add_argument('--outf', default='./output', help='folder to put model generate image')
 args = parser.parse_args()
 args.cuda = not args.no_cuda and torch.cuda.is_available()
@@ -124,60 +126,63 @@ supervised_loader = torch.utils.data.DataLoader(trainset_labeled,
 valid_loader = torch.utils.data.DataLoader(validset,
   batch_size=args.test_batch_size, shuffle=True)
 
-G = GeneratorNet()
 D = DiscriminatorNet()
-G.apply(weights_init)
 D.apply(weights_init)
-fixed_noise = Variable(torch.randn(1, 20))
 
 ############################
 # (1) Train DCGAN with unlabeled data
 ###########################
-print('\n\nTrain DCGAN with 47000 unlabeled data')
-D_optimizer = optim.Adam(D.parameters(), lr=args.unsupervised_lr, betas = (0.5, 0.999))
-G_optimizer = optim.Adam(G.parameters(), lr=args.unsupervised_lr, betas = (0.5, 0.999))
+if args.skip_unsupervised_training:
+  print('Skip unsupervised training part')
+else:
+  print('\n\nTrain DCGAN with 47000 unlabeled data')
+  G = GeneratorNet()
+  G.apply(weights_init)
+  fixed_noise = Variable(torch.randn(1, 20))
+  D_optimizer = optim.Adam(D.parameters(), lr=args.unsupervised_lr, betas = (0.5, 0.999))
+  G_optimizer = optim.Adam(G.parameters(), lr=args.unsupervised_lr, betas = (0.5, 0.999))
 
-for epoch in range(1, args.unsupervised_epochs + 1):
-  for i, (x, _) in enumerate(unsupervised_loader):
-    ############################
-    # (1.1) Update D network: maximize log(D(x)) + log(1 - D(G(z)))
-    ###########################
-    D_optimizer.zero_grad()
-    x = Variable(x)
-    x_output = D(x)
-    z = Variable(torch.randn(x.size(0), 20))
-    gz = G(z)
-    gz_output = D(gz)
-    d_loss = -(torch.mean(torch.log(x_output) + torch.log(1 - gz_output)))
-    d_loss.backward()
-    D_optimizer.step()
+  for epoch in range(1, args.unsupervised_epochs + 1):
+    for i, (x, _) in enumerate(unsupervised_loader):
+      ############################
+      # (1.1) Update D network: maximize log(D(x)) + log(1 - D(G(z)))
+      ###########################
+      D_optimizer.zero_grad()
+      x = Variable(x)
+      x_output = D(x)
+      z = Variable(torch.randn(x.size(0), 20))
+      gz = G(z)
+      gz_output = D(gz)
+      d_loss = -(torch.mean(torch.log(x_output) + torch.log(1 - gz_output)))
+      d_loss.backward()
+      D_optimizer.step()
 
-    ############################
-    # (1.2) Update G network: maximize log(D(G(z)))
-    ###########################
-    G_optimizer.zero_grad()
-    z = Variable(torch.randn(x.size(0), 20))
-    gz = G(z)
-    gz_output = D(gz)
-    g_loss = -torch.mean(torch.log(gz_output))
-    g_loss.backward()
-    G_optimizer.step()
+      ############################
+      # (1.2) Update G network: maximize log(D(G(z)))
+      ###########################
+      G_optimizer.zero_grad()
+      z = Variable(torch.randn(x.size(0), 20))
+      gz = G(z)
+      gz_output = D(gz)
+      g_loss = -torch.mean(torch.log(gz_output))
+      g_loss.backward()
+      G_optimizer.step()
 
-    if i % args.log_interval == 0:
-      print('Train Epoch: {} [{}/{} ({:.0f}%)]\nLoss_D: {:.4f}\tLoss_G: {:.4f}'.format(
-            epoch, i * len(x), len(unsupervised_loader.dataset),
-            100. * i / len(unsupervised_loader), d_loss.data[0], g_loss.data[0]))
-    if i % args.output_interval == 0:
-      vutils.save_image(x.data,'{}/real_samples.png'.format(args.outf))
-      vutils.save_image(gz.data, '{}/fake_samples.png'.format(args.outf))
-      fake = G(fixed_noise)
-      vutils.save_image(fake.data,
-        '{}/fake_samples_epoch_{}.png'.format(args.outf, epoch))
+      if i % args.log_interval == 0:
+        print('Train Epoch: {} [{}/{} ({:.0f}%)]\nLoss_D: {:.4f}\tLoss_G: {:.4f}'.format(
+              epoch, i * len(x), len(unsupervised_loader.dataset),
+              100. * i / len(unsupervised_loader), d_loss.data[0], g_loss.data[0]))
+      if i % args.output_interval == 0:
+        vutils.save_image(x.data,'{}/real_samples.png'.format(args.outf))
+        vutils.save_image(gz.data, '{}/fake_samples.png'.format(args.outf))
+        fake = G(fixed_noise)
+        vutils.save_image(fake.data,
+          '{}/fake_samples_epoch_{}.png'.format(args.outf, epoch))
 
 
-# Save ckpt at last epoch
-torch.save(G.state_dict(), '{}/G_epoch_{}.pth'.format(args.outf, epoch))
-torch.save(D.state_dict(), '{}/D_epoch_{}.pth'.format(args.outf, epoch))
+  # Save ckpt at last epoch
+  torch.save(G.state_dict(), '{}/G_epoch_{}.pth'.format(args.outf, epoch))
+  torch.save(D.state_dict(), '{}/D_epoch_{}.pth'.format(args.outf, epoch))
 
 
 ############################
