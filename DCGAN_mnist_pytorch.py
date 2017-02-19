@@ -19,14 +19,14 @@ parser = argparse.ArgumentParser(description='PyTorch semi-supervised MNIST')
 
 parser.add_argument('--unsupervised-batch-size', type=int, default=64, metavar='N',
                     help='input batch size for training (default: 64)')
-parser.add_argument('--unsupervised-epochs', type=int, default=25, metavar='N',
+parser.add_argument('--unsupervised-epochs', type=int, default=30, metavar='N',
                     help='number of epochs to train DCGAN (default: 25)')
 parser.add_argument('--unsupervised-lr', type=float, default=0.0002, metavar='LR',
                     help='learning rate (default: 0.0002)')
 
 parser.add_argument('--supervised-batch-size', type=int, default=64, metavar='N',
                     help='input batch size for training (default: 64)')
-parser.add_argument('--supervised-epochs', type=int, default=10, metavar='N',
+parser.add_argument('--supervised-epochs', type=int, default=20, metavar='N',
                     help='number of epochs to finetune classifer (default: 10)')
 parser.add_argument('--supervised-lr', type=float, default=0.01, metavar='LR',
                     help='learning rate (default: 0.01)')
@@ -134,8 +134,8 @@ fixed_noise = Variable(torch.randn(1, 20))
 # (1) Train DCGAN with unlabeled data
 ###########################
 print('\n\nTrain DCGAN with 47000 unlabeled data')
-D_optimizer = optim.Adam(D.parameters(), lr=args.unsupervised_lr)
-G_optimizer = optim.Adam(G.parameters(), lr=args.unsupervised_lr)
+D_optimizer = optim.Adam(D.parameters(), lr=args.unsupervised_lr, betas = (0.5, 0.999))
+G_optimizer = optim.Adam(G.parameters(), lr=args.unsupervised_lr, betas = (0.5, 0.999))
 
 for epoch in range(1, args.unsupervised_epochs + 1):
   for i, (x, _) in enumerate(unsupervised_loader):
@@ -169,6 +169,7 @@ for epoch in range(1, args.unsupervised_epochs + 1):
             100. * i / len(unsupervised_loader), d_loss.data[0], g_loss.data[0]))
     if i % args.output_interval == 0:
       vutils.save_image(x.data,'{}/real_samples.png'.format(args.outf))
+      vutils.save_image(gz.data, '{}/fake_samples.png'.format(args.outf))
       fake = G(fixed_noise)
       vutils.save_image(fake.data,
         '{}/fake_samples_epoch_{}.png'.format(args.outf, epoch))
@@ -194,6 +195,7 @@ D.classifier = torch.nn.Sequential(
 ###########################
 print('\n\nTuning model with 3000 labeled data')
 optimizer = optim.SGD(D.parameters(), lr=args.supervised_lr, momentum=args.supervised_momentum)
+# optimizer = optim.Adam(D.parameters(), lr=args.supervised_lr)
 for epoch in range(1, args.supervised_epochs + 1):
   for i, (data, target) in enumerate(supervised_loader):
     data, target = Variable(data), Variable(target)
@@ -207,6 +209,7 @@ for epoch in range(1, args.supervised_epochs + 1):
         epoch, i * len(data), len(supervised_loader.dataset),
         100. * i / len(supervised_loader), loss.data[0]))
 
+torch.save(D.state_dict(), '{}/D_mnist_classifier.pth'.format(args.outf))
 
 ############################
 # (4) Evaluate D network with validate data
