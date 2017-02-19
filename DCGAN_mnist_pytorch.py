@@ -1,17 +1,22 @@
 from __future__ import print_function
-import pickle
-import numpy as np
+
 import argparse
+import numpy as np
+import os
+import pickle
+import random
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from torchvision import datasets, transforms
+import torchvision.utils as vutils
 from torch.autograd import Variable
 
 
 # Training settings
-parser = argparse.ArgumentParser(description='PyTorch MNIST Example')
+parser = argparse.ArgumentParser(description='PyTorch semi-supervised MNIST')
 parser.add_argument('--batch-size', type=int, default=64, metavar='N',
                     help='input batch size for training (default: 64)')
 parser.add_argument('--test-batch-size', type=int, default=1000, metavar='N',
@@ -28,69 +33,99 @@ parser.add_argument('--seed', type=int, default=1, metavar='S',
                     help='random seed (default: 1)')
 parser.add_argument('--log-interval', type=int, default=10, metavar='N',
                     help='how many batches to wait before logging training status')
+parser.add_argument('--outf', default='./output', help='folder to put model generate image')
+
 args = parser.parse_args()
 args.cuda = not args.no_cuda and torch.cuda.is_available()
 
-torch.manual_seed(args.seed)
-
 kwargs = {'num_workers': 1, 'pin_memory': True} if args.cuda else {}
 
+random.seed(args.seed)
+torch.manual_seed(args.seed)
+
+try:
+    os.makedirs(args.outf)
+except OSError:
+    pass
+
 print('loading data!')
-trainset_unlabeled = pickle.load(open("data/train_labeled.p", "rb"))
-train_loader = torch.utils.data.DataLoader(trainset_unlabeled, batch_size=64,
-  shuffle=True, **kwargs)
+trainset_unlabeled = pickle.load(open("data/train_unlabeled.p", "rb"))
+trainset_labeled = pickle.load(open("data/train_labeled.p", "rb"))
+validset = pickle.load(open("data/validation.p", "rb"))
+
+unsupervised_loader = torch.utils.data.DataLoader(trainset_unlabeled, batch_size=64, shuffle=True, **kwargs)
+supervised_loader = torch.utils.data.DataLoader(trainset_labeled, batch_size=64, shuffle=True, **kwargs)
+valid_loader = torch.utils.data.DataLoader(validset, batch_size=64, shuffle=True)
 
 
-class Discriminator(nn.Module):
+# Randomly intialize Conv and BatchNorm layer to break symmetry
+def weights_init(m):
+  classname = m.__class__.__name__
+  if classname.find('Conv') != -1:
+    m.weight.data.normal_(0.0, 0.02)
+  elif classname.find('BatchNorm') != -1:
+    m.weight.data.normal_(1.0, 0.02)
+    m.bias.data.fill_(0)
+
+
+class DiscriminatorNet(nn.Module):
   def __init__(self):
-    super(Discriminator, self).__init__()
-    self.conv1 = nn.Conv2d(1, 16, kernel_size=4, stride=2)
-    self.conv2 = nn.Conv2d(16, 32, kernel_size=5, stride=2)
-    self.fc = nn.Linear(800, 1)
+    super(DiscriminatorNet, self).__init__()
+    self.features = nn.Sequential(
+      nn.Conv2d(1, 16, kernel_size=4, stride=2),
+      nn.BatchNorm2d(16),
+      nn.LeakyReLU(0.2),
+      nn.Conv2d(16, 32, kernel_size=5, stride=2),
+      nn.BatchNorm2d(32),
+      nn.LeakyReLU(0.2)
+    )
+    self.classifier = nn.Sequential(
+      nn.Linear(800, 1),
+      nn.Sigmoid()
+    )
 
   def forward(self, x):
-    # 28 * 28 * 1
-    x = F.leaky_relu(self.conv1(x), negative_slope=0.2)
-    # 13 * 13 * 16
-    x = F.leaky_relu(self.conv2(x), negative_slope=0.2)
-    # 5 * 5 * 32
+    x = self.features(x)
     x = x.view(-1, 800)
-    # 800 * 1
-    x = F.sigmoid(self.fc(x)) 
+    x = self.classifier(x)
     return x
 
 
-class Generator(nn.Module):
+class GeneratorNet(nn.Module):
   def __init__(self):
-    super(Generator, self).__init__()
-    self.fc1 = nn.Linear(20, 800)
-    self.convTrans1 = nn.ConvTranspose2d(32, 16, kernel_size=5, stride=2)
-    self.convTrans2 = nn.ConvTranspose2d(16, 1, kernel_size=4, stride=2)
+    super(GeneratorNet, self).__init__()
+    self.noise = nn.Sequential(
+      nn.Linear(20, 800),
+      nn.ReLU(inplace=True)
+    )
+    self.main = nn.Sequential(
+      nn.ConvTranspose2d(32, 16, kernel_size=5, stride=2),
+      nn.BatchNorm2d(16),
+      nn.ReLU(inplace=True),
+      nn.ConvTranspose2d(16, 1, kernel_size=4, stride=2),
+      nn.Tanh()
+    )
 
   def forward(self, z):
-    # 20 * 1
-    x = F.relu(self.fc1(z))
-    # 800 * 1
+    x = self.noise(z)
     x = x.view(-1, 32, 5, 5)
-    # 5 * 5 * 32
-    x = F.relu(self.convTrans1(x))
-    # 13 * 13 * 16
-    x = F.tanh(self.convTrans2(x))
-    # 28 * 28 * 1
+    x = self.main(x)
     return x
 
-D = Discriminator()
-G = Generator()
 
+G = GeneratorNet()
+D = DiscriminatorNet()
+G.apply(weights_init)
+D.apply(weights_init)
 D_optimizer = optim.Adam(D.parameters(), lr=args.lr)
 G_optimizer = optim.Adam(G.parameters(), lr=args.lr)
+fixed_noise = Variable(torch.randn(1, 20))
 
-
-def train(epoch):
-  D.train()
-  G.train()
-  for batch_idx, (x, _) in enumerate(train_loader):
-    # Train D
+for epoch in range(1, args.epochs + 1):
+  for i, (x, _) in enumerate(unsupervised_loader):
+    ############################
+    # (1) Update D network: maximize log(D(x)) + log(1 - D(G(z)))
+    ###########################
     D_optimizer.zero_grad()
     x = Variable(x)
     x_output = D(x)
@@ -100,7 +135,10 @@ def train(epoch):
     d_loss = -(torch.mean(torch.log(x_output) + torch.log(1 - gz_output)))
     d_loss.backward()
     D_optimizer.step()
-    # Train G
+
+    ############################
+    # (2) Update G network: maximize log(D(G(z)))
+    ###########################
     G_optimizer.zero_grad()
     z = Variable(torch.randn(x.size(0), 20))
     gz = G(z)
@@ -108,10 +146,53 @@ def train(epoch):
     g_loss = -torch.mean(torch.log(gz_output))
     g_loss.backward()
     G_optimizer.step()
-    if batch_idx % args.log_interval == 0:
+
+    if i % args.log_interval == 0:
       print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
-            epoch, batch_idx * len(x), len(train_loader.dataset),
-            100. * batch_idx / len(train_loader), d_loss.data[0]))
+            epoch, i * len(x), len(unsupervised_loader.dataset),
+            100. * i / len(unsupervised_loader), d_loss.data[0]))
+    if i % 100 == 0:
+      fake = G(fixed_noise)
+      vutils.save_image(fake.data,
+        '{}/fake_samples_epoch_{}.png'.format(args.outf, epoch))
+
+
+# Save ckpt at last epoch
+torch.save(G.state_dict(), '{}/G_epoch_{}.pth'.format(args.outf, epoch))
+torch.save(D.state_dict(), '{}/D_epoch_{}.pth'.format(args.outf, epoch))
+
+D.classifier = torch.nn.Sequential(
+  nn.Linear(800, 10),
+  nn.ReLU(inplace=True),
+  nn.LogSoftmax()
+)
+
+optimizer = optim.SGD(D.parameters(), lr=args.lr, momentum=args.momentum)
 
 for epoch in range(1, args.epochs + 1):
-  train(epoch)
+  for i, (data, target) in enumerate(supervised_loader):
+    data, target = Variable(data), Variable(target)
+    optimizer.zero_grad()
+    output = D(data)
+    loss = F.nll_loss(output, target)
+    loss.backward()
+    optimizer.step()
+    if i % args.log_interval == 0:
+      print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
+        epoch, i * len(data), len(supervised_loader.dataset),
+        100. * i / len(supervised_loader), loss.data[0]))
+
+D.eval()
+test_loss = 0
+correct = 0
+for data, target in valid_loader:
+  data, target = Variable(data, volatile=True), Variable(target)
+  output = D(data)
+  test_loss += F.nll_loss(output, target).data[0]
+  pred = output.data.max(1)[1] # get the index of the max log-probability
+  correct += pred.eq(target.data).cpu().sum()
+
+test_loss /= len(valid_loader) # loss function already averages over batch size
+print('\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)\n'.format(
+    test_loss, correct, len(valid_loader.dataset),
+    100. * correct / len(valid_loader.dataset)))
