@@ -10,31 +10,41 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from torchvision import datasets, transforms
 import torchvision.utils as vutils
 from torch.autograd import Variable
 
 
 # Training settings
 parser = argparse.ArgumentParser(description='PyTorch semi-supervised MNIST')
-parser.add_argument('--batch-size', type=int, default=64, metavar='N',
+
+parser.add_argument('--unsupervised-batch-size', type=int, default=64, metavar='N',
                     help='input batch size for training (default: 64)')
+parser.add_argument('--unsupervised-epochs', type=int, default=25, metavar='N',
+                    help='number of epochs to train DCGAN (default: 25)')
+parser.add_argument('--unsupervised-lr', type=float, default=0.0002, metavar='LR',
+                    help='learning rate (default: 0.0002)')
+
+parser.add_argument('--supervised-batch-size', type=int, default=64, metavar='N',
+                    help='input batch size for training (default: 64)')
+parser.add_argument('--supervised-epochs', type=int, default=10, metavar='N',
+                    help='number of epochs to finetune classifer (default: 10)')
+parser.add_argument('--supervised-lr', type=float, default=0.01, metavar='LR',
+                    help='learning rate (default: 0.01)')
+parser.add_argument('--supervised-momentum', type=float, default=0.5, metavar='M',
+                    help='SGD momentum (default: 0.5)')
+
 parser.add_argument('--test-batch-size', type=int, default=1000, metavar='N',
                     help='input batch size for testing (default: 1000)')
-parser.add_argument('--epochs', type=int, default=10, metavar='N',
-                    help='number of epochs to train (default: 10)')
-parser.add_argument('--lr', type=float, default=0.0002, metavar='LR',
-                    help='learning rate (default: 0.0002)')
-parser.add_argument('--momentum', type=float, default=0.5, metavar='M',
-                    help='SGD momentum (default: 0.5)')
-parser.add_argument('--no-cuda', action='store_true', default=False,
-                    help='enables CUDA training')
+
 parser.add_argument('--seed', type=int, default=1, metavar='S',
                     help='random seed (default: 1)')
 parser.add_argument('--log-interval', type=int, default=10, metavar='N',
                     help='how many batches to wait before logging training status')
+parser.add_argument('--output-interval', type=int, default=100, metavar='N',
+                    help='how many batches to wait before logging training status')
+parser.add_argument('--no-cuda', action='store_true', default=False,
+                    help='enables CUDA training')
 parser.add_argument('--outf', default='./output', help='folder to put model generate image')
-
 args = parser.parse_args()
 args.cuda = not args.no_cuda and torch.cuda.is_available()
 
@@ -47,16 +57,6 @@ try:
     os.makedirs(args.outf)
 except OSError:
     pass
-
-print('loading data!')
-trainset_unlabeled = pickle.load(open("data/train_unlabeled.p", "rb"))
-trainset_labeled = pickle.load(open("data/train_labeled.p", "rb"))
-validset = pickle.load(open("data/validation.p", "rb"))
-
-unsupervised_loader = torch.utils.data.DataLoader(trainset_unlabeled, batch_size=64, shuffle=True, **kwargs)
-supervised_loader = torch.utils.data.DataLoader(trainset_labeled, batch_size=64, shuffle=True, **kwargs)
-valid_loader = torch.utils.data.DataLoader(validset, batch_size=64, shuffle=True)
-
 
 # Randomly intialize Conv and BatchNorm layer to break symmetry
 def weights_init(m):
@@ -112,19 +112,35 @@ class GeneratorNet(nn.Module):
     x = self.main(x)
     return x
 
+print('Loading data!')
+trainset_unlabeled = pickle.load(open("data/train_unlabeled.p", "rb"))
+trainset_labeled = pickle.load(open("data/train_labeled.p", "rb"))
+validset = pickle.load(open("data/validation.p", "rb"))
+
+unsupervised_loader = torch.utils.data.DataLoader(trainset_unlabeled,
+  batch_size=args.unsupervised_batch_size, shuffle=True, **kwargs)
+supervised_loader = torch.utils.data.DataLoader(trainset_labeled,
+  batch_size=args.supervised_batch_size, shuffle=True, **kwargs)
+valid_loader = torch.utils.data.DataLoader(validset,
+  batch_size=args.test_batch_size, shuffle=True)
 
 G = GeneratorNet()
 D = DiscriminatorNet()
 G.apply(weights_init)
 D.apply(weights_init)
-D_optimizer = optim.Adam(D.parameters(), lr=args.lr)
-G_optimizer = optim.Adam(G.parameters(), lr=args.lr)
 fixed_noise = Variable(torch.randn(1, 20))
 
-for epoch in range(1, args.epochs + 1):
+############################
+# (1) Train DCGAN with unlabeled data
+###########################
+print('\n\nTrain DCGAN with 47000 unlabeled data')
+D_optimizer = optim.Adam(D.parameters(), lr=args.unsupervised_lr)
+G_optimizer = optim.Adam(G.parameters(), lr=args.unsupervised_lr)
+
+for epoch in range(1, args.unsupervised_epochs + 1):
   for i, (x, _) in enumerate(unsupervised_loader):
     ############################
-    # (1) Update D network: maximize log(D(x)) + log(1 - D(G(z)))
+    # (1.1) Update D network: maximize log(D(x)) + log(1 - D(G(z)))
     ###########################
     D_optimizer.zero_grad()
     x = Variable(x)
@@ -137,7 +153,7 @@ for epoch in range(1, args.epochs + 1):
     D_optimizer.step()
 
     ############################
-    # (2) Update G network: maximize log(D(G(z)))
+    # (1.2) Update G network: maximize log(D(G(z)))
     ###########################
     G_optimizer.zero_grad()
     z = Variable(torch.randn(x.size(0), 20))
@@ -148,10 +164,11 @@ for epoch in range(1, args.epochs + 1):
     G_optimizer.step()
 
     if i % args.log_interval == 0:
-      print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
+      print('Train Epoch: {} [{}/{} ({:.0f}%)]\nLoss_D: {:.4f}\tLoss_G: {:.4f}'.format(
             epoch, i * len(x), len(unsupervised_loader.dataset),
-            100. * i / len(unsupervised_loader), d_loss.data[0]))
-    if i % 100 == 0:
+            100. * i / len(unsupervised_loader), d_loss.data[0], g_loss.data[0]))
+    if i % args.output_interval == 0:
+      vutils.save_image(x.data,'{}/real_samples.png'.format(args.outf))
       fake = G(fixed_noise)
       vutils.save_image(fake.data,
         '{}/fake_samples_epoch_{}.png'.format(args.outf, epoch))
@@ -161,15 +178,23 @@ for epoch in range(1, args.epochs + 1):
 torch.save(G.state_dict(), '{}/G_epoch_{}.pth'.format(args.outf, epoch))
 torch.save(D.state_dict(), '{}/D_epoch_{}.pth'.format(args.outf, epoch))
 
+
+############################
+# (2) Modify D network: Change the 0-1 discriminator into classifier
+###########################
 D.classifier = torch.nn.Sequential(
   nn.Linear(800, 10),
   nn.ReLU(inplace=True),
   nn.LogSoftmax()
 )
 
-optimizer = optim.SGD(D.parameters(), lr=args.lr, momentum=args.momentum)
 
-for epoch in range(1, args.epochs + 1):
+############################
+# (3) Update D network with labeled data
+###########################
+print('\n\nTuning model with 3000 labeled data')
+optimizer = optim.SGD(D.parameters(), lr=args.supervised_lr, momentum=args.supervised_momentum)
+for epoch in range(1, args.supervised_epochs + 1):
   for i, (data, target) in enumerate(supervised_loader):
     data, target = Variable(data), Variable(target)
     optimizer.zero_grad()
@@ -182,6 +207,11 @@ for epoch in range(1, args.epochs + 1):
         epoch, i * len(data), len(supervised_loader.dataset),
         100. * i / len(supervised_loader), loss.data[0]))
 
+
+############################
+# (4) Evaluate D network with validate data
+###########################
+print('\n\nEvaluate model with validate labeled data')
 D.eval()
 test_loss = 0
 correct = 0
