@@ -46,7 +46,7 @@ parser.add_argument('--no-cuda', action='store_true', default=False,
                     help='enables CUDA training')
 parser.add_argument('--skip-unsupervised-training', action="store_true",
                     help="skip unsupervised training part")
-parser.add_argument('--outf', default='./output', help='folder to put model generate image')
+parser.add_argument('--outdir', default='./output', help='folder to put model generate image')
 args = parser.parse_args()
 args.cuda = not args.no_cuda and torch.cuda.is_available()
 
@@ -56,7 +56,7 @@ random.seed(args.seed)
 torch.manual_seed(args.seed)
 
 try:
-    os.makedirs(args.outf)
+    os.makedirs(args.outdir)
 except OSError:
     pass
 
@@ -173,16 +173,16 @@ else:
               epoch, i * len(x), len(unsupervised_loader.dataset),
               100. * i / len(unsupervised_loader), d_loss.data[0], g_loss.data[0]))
       if i % args.output_interval == 0:
-        vutils.save_image(x.data,'{}/real_samples.png'.format(args.outf))
-        vutils.save_image(gz.data, '{}/fake_samples.png'.format(args.outf))
+        vutils.save_image(x.data,'{}/real_samples.png'.format(args.outdir))
+        vutils.save_image(gz.data, '{}/fake_samples.png'.format(args.outdir))
         fake = G(fixed_noise)
         vutils.save_image(fake.data,
-          '{}/fake_samples_epoch_{}.png'.format(args.outf, epoch))
+          '{}/fake_samples_epoch_{}.png'.format(args.outdir, epoch))
 
 
   # Save ckpt at last epoch
-  torch.save(G.state_dict(), '{}/G_epoch_{}.pth'.format(args.outf, epoch))
-  torch.save(D.state_dict(), '{}/D_epoch_{}.pth'.format(args.outf, epoch))
+  torch.save(G.state_dict(), '{}/G_epoch_{}.pth'.format(args.outdir, epoch))
+  torch.save(D.state_dict(), '{}/D_epoch_{}.pth'.format(args.outdir, epoch))
 
 
 ############################
@@ -214,7 +214,7 @@ for epoch in range(1, args.supervised_epochs + 1):
         epoch, i * len(data), len(supervised_loader.dataset),
         100. * i / len(supervised_loader), loss.data[0]))
 
-torch.save(D.state_dict(), '{}/D_mnist_classifier.pth'.format(args.outf))
+torch.save(D.state_dict(), '{}/D_mnist_classifier.pth'.format(args.outdir))
 
 ############################
 # (4) Evaluate D network with validate data
