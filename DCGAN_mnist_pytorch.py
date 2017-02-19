@@ -1,6 +1,7 @@
 from __future__ import print_function
 
 import argparse
+import glob
 import numpy as np
 import os
 import pickle
@@ -13,6 +14,9 @@ import torch.optim as optim
 import torchvision.utils as vutils
 from torch.autograd import Variable
 
+G_CKPT_PREFIX = 'unsupervised_G_epoch_'
+D_CKPT_PREFIX = 'unsupervised_D_epoch_'
+SUPERVISED_CKPT_PREFIX = 'supervised_epoch_'
 
 # Training settings
 parser = argparse.ArgumentParser(description='PyTorch semi-supervised MNIST')
@@ -40,8 +44,10 @@ parser.add_argument('--output-interval', type=int, default=100, metavar='N',
 # Test params
 parser.add_argument('--test-batch-size', type=int, default=1000, metavar='N',
                     help='input batch size for testing (default: 1000)')
-# Output params
+# Continue training and output params
 parser.add_argument('--outdir', default='./output', help='folder to put model generate image')
+parser.add_argument('--training-index', type=int, default=None,
+                    help='Set this number to load and contine train on previous model.')
 # Run mode params
 parser.add_argument('--seed', type=int, default=1, metavar='S',
                     help='random seed (default: 1)')
@@ -61,6 +67,7 @@ kwargs = {'num_workers': 1, 'pin_memory': True} if args.cuda else {}
 # Other args
 random.seed(args.seed)
 torch.manual_seed(args.seed)
+unsupervised_trained = False
 args.unsupervised_training_data = 'data/train_unlabeled.p'
 args.supervised_training_data = 'data/train_labeled.p'
 args.validation_data = 'data/validation.p'
@@ -70,10 +77,56 @@ if args.minimal_run:
   args.unsupervised_training_data = 'data/train_labeled.p'
   args.validation_data = 'data/train_labeled.p'
 
-try:
-    os.makedirs(args.outdir)
-except OSError:
-    pass
+def get_checkpoint_index(filepath):
+  if filepath is None:
+    return 0
+  else:
+    filename = os.path.basename(filepath).split('.')[0]
+    return int(filename.split('_')[-1])
+
+def find_latest_ckpt_info(path, type):
+  if type == 'unsupervised':
+    g_ckpts = sorted(glob.glob(os.path.join(path, G_CKPT_PREFIX + '*')),
+      key=get_checkpoint_index)
+    g_ckpt = g_ckpts[-1] if len(g_ckpts) > 0 else None
+    g_epoch = get_checkpoint_index(g_ckpt)
+    print("Found {} generator Checkpoints, return {}".format(
+      len(g_ckpts), g_ckpt))
+    d_ckpts = sorted(glob.glob(os.path.join(path, D_CKPT_PREFIX + '*')),
+      key=get_checkpoint_index)
+    d_ckpt = d_ckpts[-1] if len(d_ckpts) > 0 else None
+    d_epoch = get_checkpoint_index(d_ckpt)
+    print("Found {} discriminitor Checkpoints, return {}".format(
+      len(d_ckpts), d_ckpt))
+    return min(d_epoch, g_epoch), g_ckpt, d_ckpt
+  else:
+    ckpts = sorted(glob.glob(os.path.join(path, SUPERVISED_CKPT_PREFIX + '*')),
+      key=get_checkpoint_index)
+    ckpt = ckpts[-1] if len(ckpts) > 0 else None
+    epoch = get_checkpoint_index(ckpt)
+    print("Found {} supervised Checkpoints, return {}".format(
+      len(ckpts), ckpt))
+    return epoch, ckpt
+
+# Make output dir
+if not args.training_index:
+  args.training_index = len(filter(
+    lambda child: os.path.isdir(os.path.join(args.outdir, child)),
+    os.listdir(args.outdir))) + 1
+args.outdir = os.path.join(args.outdir, 'train {}'.format(args.training_index))
+if os.path.exists(args.outdir):
+  (latest_unsupervised_epoch, latest_unsupervised_G_ckpt,
+    latest_unsupervised_D_ckpt) = find_latest_ckpt_info(args.outdir,
+    'unsupervised')
+  latest_supervised_epoch, latest_supervised_ckpt = find_latest_ckpt_info(
+    args.outdir, 'supervised')
+else:
+  latest_unsupervised_epoch = 0
+  latest_unsupervised_G_ckpt = None
+  latest_unsupervised_D_ckpt = None
+  latest_supervised_epoch = 0
+  latest_supervised_ckpt = None
+  os.makedirs(args.outdir)
 
 # Randomly intialize Conv and BatchNorm layer to break symmetry
 def weights_init(m):
@@ -143,21 +196,28 @@ valid_loader = torch.utils.data.DataLoader(validset,
 
 D = DiscriminatorNet()
 D.apply(weights_init)
+if latest_unsupervised_D_ckpt is not None:
+  print("Loading discriminator model: {} ".format(latest_unsupervised_D_ckpt))
+  D.load_state_dict(torch.load(latest_unsupervised_D_ckpt))
 
 ############################
 # (1) Train DCGAN with unlabeled data
 ###########################
-if args.skip_unsupervised_training:
+if args.skip_unsupervised_training or (latest_unsupervised_epoch >= args.unsupervised_epochs):
   print('Skip unsupervised training part')
 else:
   print('\n\nTrain DCGAN with 47000 unlabeled data')
   G = GeneratorNet()
   G.apply(weights_init)
+  if latest_unsupervised_G_ckpt is not None:
+    print("Loading generator model: {} ".format(latest_unsupervised_G_ckpt))
+    G.load_state_dict(torch.load(latest_unsupervised_G_ckpt))
   fixed_noise = Variable(torch.randn(1, 20))
   D_optimizer = optim.Adam(D.parameters(), lr=args.unsupervised_lr, betas = (0.5, 0.999))
   G_optimizer = optim.Adam(G.parameters(), lr=args.unsupervised_lr, betas = (0.5, 0.999))
 
-  for epoch in range(1, args.unsupervised_epochs + 1):
+  for latest_unsupervised_epoch in range(latest_unsupervised_epoch + 1,
+    args.unsupervised_epochs + 1):
     for i, (x, _) in enumerate(unsupervised_loader):
       ############################
       # (1.1) Update D network: maximize log(D(x)) + log(1 - D(G(z)))
@@ -185,19 +245,21 @@ else:
 
       if i % args.log_interval == 0:
         print('Train Epoch: {} [{}/{} ({:.0f}%)]\nLoss_D: {:.4f}\tLoss_G: {:.4f}'.format(
-              epoch, i * len(x), len(unsupervised_loader.dataset),
+              latest_unsupervised_epoch, i * len(x), len(unsupervised_loader.dataset),
               100. * i / len(unsupervised_loader), d_loss.data[0], g_loss.data[0]))
       if i % args.output_interval == 0:
         vutils.save_image(x.data,'{}/real_samples.png'.format(args.outdir))
         vutils.save_image(gz.data, '{}/fake_samples.png'.format(args.outdir))
         fake = G(fixed_noise)
         vutils.save_image(fake.data,
-          '{}/fake_samples_epoch_{}.png'.format(args.outdir, epoch))
+          '{}/fake_sample_epoch_{}.png'.format(args.outdir, latest_unsupervised_epoch))
 
+    unsupervised_trained = True
 
   # Save ckpt at last epoch
-  torch.save(G.state_dict(), '{}/G_epoch_{}.pth'.format(args.outdir, epoch))
-  torch.save(D.state_dict(), '{}/D_epoch_{}.pth'.format(args.outdir, epoch))
+  if unsupervised_trained:
+    torch.save(G.state_dict(), '{}/{}{}.pth'.format(args.outdir, G_CKPT_PREFIX, latest_unsupervised_epoch))
+    torch.save(D.state_dict(), '{}/{}{}.pth'.format(args.outdir, D_CKPT_PREFIX, latest_unsupervised_epoch))
 
 
 ############################
@@ -213,7 +275,7 @@ D.classifier = torch.nn.Sequential(
 ############################
 # (3) Update D network with labeled data
 ###########################
-print('\n\nTuning model with 3000 labeled data')
+print('\n\nModify discriminator structure for classification')
 if args.lock_pretrained_params:
   print("(Lock the pretrained params and only training the classifer)")
   target_params = [
@@ -224,23 +286,31 @@ else:
   target_params = [
     {'params': D.parameters(), 'lr':args.supervised_lr}
   ]
-optimizer = optim.SGD(target_params, lr=args.supervised_lr,
-  momentum=args.supervised_momentum)
-# optimizer = optim.Adam(D.parameters(), lr=args.supervised_lr)
-for epoch in range(1, args.supervised_epochs + 1):
-  for i, (data, target) in enumerate(supervised_loader):
-    data, target = Variable(data), Variable(target)
-    optimizer.zero_grad()
-    output = D(data)
-    loss = F.nll_loss(output, target)
-    loss.backward()
-    optimizer.step()
-    if i % args.log_interval == 0:
-      print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
-        epoch, i * len(data), len(supervised_loader.dataset),
-        100. * i / len(supervised_loader), loss.data[0]))
+if not unsupervised_trained and latest_supervised_ckpt is not None:
+  print("Loading supervised model: {} ".format(latest_supervised_ckpt))
+  D.load_state_dict(torch.load(latest_supervised_ckpt))
+else:
+  latest_supervised_epoch = 0
 
-torch.save(D.state_dict(), '{}/D_mnist_classifier.pth'.format(args.outdir))
+if latest_supervised_epoch < args.supervised_epochs:
+  print('\n\nTuning model with 3000 labeled data')
+  optimizer = optim.SGD(target_params, lr=args.supervised_lr,
+    momentum=args.supervised_momentum)
+  # optimizer = optim.Adam(D.parameters(), lr=args.supervised_lr)
+  for latest_supervised_epoch in range(latest_supervised_epoch + 1, args.supervised_epochs + 1):
+    for i, (data, target) in enumerate(supervised_loader):
+      data, target = Variable(data), Variable(target)
+      optimizer.zero_grad()
+      output = D(data)
+      loss = F.nll_loss(output, target)
+      loss.backward()
+      optimizer.step()
+      if i % args.log_interval == 0:
+        print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
+          latest_supervised_epoch, i * len(data), len(supervised_loader.dataset),
+          100. * i / len(supervised_loader), loss.data[0]))
+
+  torch.save(D.state_dict(), '{}/{}{}.pth'.format(args.outdir, SUPERVISED_CKPT_PREFIX, latest_supervised_epoch))
 
 ############################
 # (4) Evaluate D network with validate data
