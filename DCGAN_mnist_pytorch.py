@@ -16,14 +16,14 @@ from torch.autograd import Variable
 
 # Training settings
 parser = argparse.ArgumentParser(description='PyTorch semi-supervised MNIST')
-
+# Unsupervised training params
 parser.add_argument('--unsupervised-batch-size', type=int, default=64, metavar='N',
                     help='input batch size for training (default: 64)')
 parser.add_argument('--unsupervised-epochs', type=int, default=30, metavar='N',
                     help='number of epochs to train DCGAN (default: 25)')
 parser.add_argument('--unsupervised-lr', type=float, default=0.0002, metavar='LR',
                     help='learning rate (default: 0.0002)')
-
+# Supervised training params
 parser.add_argument('--supervised-batch-size', type=int, default=64, metavar='N',
                     help='input batch size for training (default: 64)')
 parser.add_argument('--supervised-epochs', type=int, default=20, metavar='N',
@@ -32,28 +32,40 @@ parser.add_argument('--supervised-lr', type=float, default=0.01, metavar='LR',
                     help='learning rate (default: 0.01)')
 parser.add_argument('--supervised-momentum', type=float, default=0.5, metavar='M',
                     help='SGD momentum (default: 0.5)')
-
-parser.add_argument('--test-batch-size', type=int, default=1000, metavar='N',
-                    help='input batch size for testing (default: 1000)')
-
-parser.add_argument('--seed', type=int, default=1, metavar='S',
-                    help='random seed (default: 1)')
+# Training monitor params
 parser.add_argument('--log-interval', type=int, default=10, metavar='N',
                     help='how many batches to wait before logging training status')
 parser.add_argument('--output-interval', type=int, default=100, metavar='N',
                     help='how many batches to wait before logging training status')
+# Test params
+parser.add_argument('--test-batch-size', type=int, default=1000, metavar='N',
+                    help='input batch size for testing (default: 1000)')
+# Output params
+parser.add_argument('--outdir', default='./output', help='folder to put model generate image')
+# Run mode params
+parser.add_argument('--seed', type=int, default=1, metavar='S',
+                    help='random seed (default: 1)')
 parser.add_argument('--no-cuda', action='store_true', default=False,
                     help='enables CUDA training')
-parser.add_argument('--skip-unsupervised-training', action="store_true",
-                    help="skip unsupervised training part")
-parser.add_argument('--outdir', default='./output', help='folder to put model generate image')
+parser.add_argument('--skip-unsupervised-training', action='store_true',
+                    help='skip unsupervised training part')
+parser.add_argument('--minimal-run', action='store_true', help="run minimal version to test code")
+
+# Parse args
 args = parser.parse_args()
+# Cuda
 args.cuda = not args.no_cuda and torch.cuda.is_available()
-
 kwargs = {'num_workers': 1, 'pin_memory': True} if args.cuda else {}
-
+# Other args
 random.seed(args.seed)
 torch.manual_seed(args.seed)
+args.unsupervised_training_data = 'data/train_unlabeled.p'
+args.supervised_training_data = 'data/train_labeled.p'
+args.validation_data = 'data/validation.p'
+if args.minimal_run:
+  args.unsupervised_epochs = 1
+  args.supervised_epochs = 1
+  args.unsupervised_training_data = 'data/train_labeled.p'
 
 try:
     os.makedirs(args.outdir)
@@ -115,9 +127,9 @@ class GeneratorNet(nn.Module):
     return x
 
 print('Loading data!')
-trainset_unlabeled = pickle.load(open("data/train_unlabeled.p", "rb"))
-trainset_labeled = pickle.load(open("data/train_labeled.p", "rb"))
-validset = pickle.load(open("data/validation.p", "rb"))
+trainset_unlabeled = pickle.load(open(args.unsupervised_training_data, "rb"))
+trainset_labeled = pickle.load(open(args.supervised_training_data, "rb"))
+validset = pickle.load(open(args.validation_data, "rb"))
 
 unsupervised_loader = torch.utils.data.DataLoader(trainset_unlabeled,
   batch_size=args.unsupervised_batch_size, shuffle=True, **kwargs)
