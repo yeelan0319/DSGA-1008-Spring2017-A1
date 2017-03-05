@@ -145,21 +145,21 @@ class DiscriminatorNet(nn.Module):
   def __init__(self):
     super(DiscriminatorNet, self).__init__()
     self.features = nn.Sequential(
-      nn.Conv2d(1, 16, kernel_size=4, stride=2),
+      nn.Conv2d(1, 16, 4, 2, 1),
       nn.BatchNorm2d(16),
       nn.LeakyReLU(0.2),
-      nn.Conv2d(16, 32, kernel_size=5, stride=2),
+      nn.Conv2d(16, 32, 4, 2, 1),
       nn.BatchNorm2d(32),
       nn.LeakyReLU(0.2)
     )
     self.classifier = nn.Sequential(
-      nn.Linear(800, 1),
+      nn.Linear(1568, 1),
       nn.Sigmoid()
     )
 
   def forward(self, x):
     x = self.features(x)
-    x = x.view(-1, 800)
+    x = x.view(-1, 1568)
     x = self.classifier(x)
     return x
 
@@ -168,20 +168,20 @@ class GeneratorNet(nn.Module):
   def __init__(self):
     super(GeneratorNet, self).__init__()
     self.noise = nn.Sequential(
-      nn.Linear(20, 800),
+      nn.Linear(20, 1568),
       nn.ReLU(inplace=True)
     )
     self.main = nn.Sequential(
-      nn.ConvTranspose2d(32, 16, kernel_size=5, stride=2),
+      nn.ConvTranspose2d(32, 16, 4, 2, 1),
       nn.BatchNorm2d(16),
       nn.ReLU(inplace=True),
-      nn.ConvTranspose2d(16, 1, kernel_size=4, stride=2),
+      nn.ConvTranspose2d(16, 1, 4, 2, 1),
       nn.Tanh()
     )
 
   def forward(self, z):
     x = self.noise(z)
-    x = x.view(-1, 32, 5, 5)
+    x = x.view(-1, 32, 7, 7)
     x = self.main(x)
     return x
 
@@ -265,7 +265,7 @@ else:
 # (2) Modify D network: Change the 0-1 discriminator into classifier
 ###########################
 D.classifier = torch.nn.Sequential(
-  nn.Linear(800, 10),
+  nn.Linear(1568, 10),
   nn.ReLU(inplace=True),
   nn.LogSoftmax()
 )
