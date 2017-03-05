@@ -40,7 +40,9 @@ parser.add_argument('--supervised-momentum', type=float, default=0.5, metavar='M
 parser.add_argument('--log-interval', type=int, default=10, metavar='N',
                     help='how many batches to wait before logging training status')
 parser.add_argument('--output-interval', type=int, default=100, metavar='N',
-                    help='how many batches to wait before logging training status')
+                    help='how many batches to wait before generate DCGAN generated image')
+parser.add_argument('--save-ckpt-interval', type=int, default=10, metavar='N',
+                    help='how many epochs to wait before saving the current weights to ckpt')
 # Test params
 parser.add_argument('--test-batch-size', type=int, default=1000, metavar='N',
                     help='input batch size for testing (default: 1000)')
@@ -301,6 +303,9 @@ if latest_supervised_epoch < args.supervised_epochs:
     momentum=args.supervised_momentum)
   # optimizer = optim.Adam(D.parameters(), lr=args.supervised_lr)
   for latest_supervised_epoch in range(latest_supervised_epoch + 1, args.supervised_epochs + 1):
+    ############################
+    # (3.1) Training
+    ###########################
     for i, (data, target) in enumerate(supervised_loader):
       data = Variable(data if not args.cuda else data.cuda())
       target = Variable(target if not args.cuda else target.cuda())
@@ -314,24 +319,29 @@ if latest_supervised_epoch < args.supervised_epochs:
           latest_supervised_epoch, i * len(data), len(supervised_loader.dataset),
           100. * i / len(supervised_loader), loss.data[0]))
 
-  torch.save(D.state_dict(), '{}/{}{}.pth'.format(args.outdir, SUPERVISED_CKPT_PREFIX, latest_supervised_epoch))
+    ############################
+    # (3.2) Evaluate D network with validate data
+    ###########################
+    print('\n\nEvaluate model with validate labeled data')
+    D.eval()
+    test_loss = 0
+    correct = 0
+    for data, target in valid_loader:
+      data = Variable(data if not args.cuda else data.cuda(), volatile=True)
+      target = Variable(target if not args.cuda else target.cuda())
+      output = D(data)
+      test_loss += F.nll_loss(output, target).data[0]
+      pred = output.data.max(1)[1] # get the index of the max log-probability
+      correct += pred.eq(target.data).cpu().sum()
 
-############################
-# (4) Evaluate D network with validate data
-###########################
-print('\n\nEvaluate model with validate labeled data')
-D.eval()
-test_loss = 0
-correct = 0
-for data, target in valid_loader:
-  data = Variable(data if not args.cuda else data.cuda(), volatile=True)
-  target = Variable(target if not args.cuda else target.cuda())
-  output = D(data)
-  test_loss += F.nll_loss(output, target).data[0]
-  pred = output.data.max(1)[1] # get the index of the max log-probability
-  correct += pred.eq(target.data).cpu().sum()
+    test_loss /= len(valid_loader) # loss function already averages over batch size
+    print('\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.2f}%)\n'.format(
+        test_loss, correct, len(valid_loader.dataset),
+        100. * correct / len(valid_loader.dataset)))
 
-test_loss /= len(valid_loader) # loss function already averages over batch size
-print('\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.2f}%)\n'.format(
-    test_loss, correct, len(valid_loader.dataset),
-    100. * correct / len(valid_loader.dataset)))
+    ############################
+    # (3.3) Save checkpoint 5 epochs
+    ###########################
+    if ((latest_supervised_epoch - latest_supervised_epoch - 1) % args.save_ckpt_interval == 0 or
+      latest_supervised_epoch == args.supervised_epochs):
+      torch.save(D.state_dict(), '{}/{}{}.pth'.format(args.outdir, SUPERVISED_CKPT_PREFIX, latest_supervised_epoch))
