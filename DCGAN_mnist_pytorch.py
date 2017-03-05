@@ -271,6 +271,8 @@ D.classifier = torch.nn.Sequential(
   nn.ReLU(inplace=True),
   nn.LogSoftmax()
 )
+if args.cuda:
+  D.cuda()
 
 
 ############################
@@ -323,7 +325,7 @@ test_loss = 0
 correct = 0
 for data, target in valid_loader:
   data = Variable(data if not args.cuda else data.cuda(), volatile=True)
-  target = Variable(target if not args.cuda else data.target())
+  target = Variable(target if not args.cuda else target.cuda())
   output = D(data)
   test_loss += F.nll_loss(output, target).data[0]
   pred = output.data.max(1)[1] # get the index of the max log-probability
