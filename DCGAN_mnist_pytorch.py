@@ -185,18 +185,6 @@ class GeneratorNet(nn.Module):
     x = self.main(x)
     return x
 
-print('Loading data!')
-trainset_unlabeled = pickle.load(open(args.unsupervised_training_data, "rb"))
-trainset_labeled = pickle.load(open(args.supervised_training_data, "rb"))
-validset = pickle.load(open(args.validation_data, "rb"))
-
-unsupervised_loader = torch.utils.data.DataLoader(trainset_unlabeled,
-  batch_size=args.unsupervised_batch_size, shuffle=True, **kwargs)
-supervised_loader = torch.utils.data.DataLoader(trainset_labeled,
-  batch_size=args.supervised_batch_size, shuffle=True, **kwargs)
-valid_loader = torch.utils.data.DataLoader(validset,
-  batch_size=args.test_batch_size, shuffle=True)
-
 D = DiscriminatorNet() if not args.cuda else DiscriminatorNet().cuda()
 D.apply(weights_init)
 if latest_unsupervised_D_ckpt is not None:
@@ -219,50 +207,58 @@ else:
   G_optimizer = optim.Adam(G.parameters(), lr=args.unsupervised_lr, betas = (0.5, 0.999))
   fixed_noise = Variable(torch.randn(1, 20) if not args.cuda else torch.randn(1, 20).cuda())
 
-  for latest_unsupervised_epoch in range(latest_unsupervised_epoch + 1,
-    args.unsupervised_epochs + 1):
-    for i, (x, _) in enumerate(unsupervised_loader):
-      ############################
-      # (1.1) Update D network: maximize log(D(x)) + log(1 - D(G(z)))
-      ###########################
-      D_optimizer.zero_grad()
-      x = Variable(x if not args.cuda else x.cuda())
-      x_output = D(x)
-      z = Variable(torch.randn(x.size(0), 20) if not args.cuda else torch.randn(x.size(0), 20).cuda())
-      gz = G(z)
-      gz_output = D(gz)
-      d_loss = -(torch.mean(torch.log(x_output) + torch.log(1 - gz_output)))
-      d_loss.backward()
-      D_optimizer.step()
+  start_unsupervised_epoch = latest_unsupervised_epoch + 1
+  if start_unsupervised_epoch < args.unsupervised_epochs + 1:
+    trainset_unlabeled = pickle.load(open(args.unsupervised_training_data, "rb"))
+    unsupervised_loader = torch.utils.data.DataLoader(trainset_unlabeled,
+      batch_size=args.unsupervised_batch_size, shuffle=True, **kwargs)
+
+    for latest_unsupervised_epoch in range(start_unsupervised_epoch, args.unsupervised_epochs + 1):
+      for i, (x, _) in enumerate(unsupervised_loader):
+        ############################
+        # (1.1) Update D network: maximize log(D(x)) + log(1 - D(G(z)))
+        ###########################
+        D_optimizer.zero_grad()
+        x = Variable(x if not args.cuda else x.cuda())
+        x_output = D(x)
+        z = Variable(torch.randn(x.size(0), 20) if not args.cuda else torch.randn(x.size(0), 20).cuda())
+        gz = G(z)
+        gz_output = D(gz)
+        d_loss = -(torch.mean(torch.log(x_output) + torch.log(1 - gz_output)))
+        d_loss.backward()
+        D_optimizer.step()
+
+        ############################
+        # (1.2) Update G network: maximize log(D(G(z)))
+        ###########################
+        G_optimizer.zero_grad()
+        z = Variable(torch.randn(x.size(0), 20) if not args.cuda else torch.randn(x.size(0), 20).cuda())
+        gz = G(z)
+        gz_output = D(gz)
+        g_loss = -torch.mean(torch.log(gz_output))
+        g_loss.backward()
+        G_optimizer.step()
+
+        if i % args.log_interval == 0:
+          print('Train Epoch: {} [{}/{} ({:.0f}%)]\nLoss_D: {:.4f}\tLoss_G: {:.4f}'.format(
+                latest_unsupervised_epoch, i * len(x), len(unsupervised_loader.dataset),
+                100. * i / len(unsupervised_loader), d_loss.data[0], g_loss.data[0]))
+        if i % args.output_interval == 0:
+          vutils.save_image(x.data,'{}/real_samples.png'.format(args.outdir))
+          vutils.save_image(gz.data, '{}/fake_samples.png'.format(args.outdir))
+          fake = G(fixed_noise)
+          vutils.save_image(fake.data,
+            '{}/fake_sample_epoch_{}.png'.format(args.outdir, latest_unsupervised_epoch))
 
       ############################
-      # (1.2) Update G network: maximize log(D(G(z)))
+      # (1.3) Save checkpoint every save_ckpt_interval epochs
       ###########################
-      G_optimizer.zero_grad()
-      z = Variable(torch.randn(x.size(0), 20) if not args.cuda else torch.randn(x.size(0), 20).cuda())
-      gz = G(z)
-      gz_output = D(gz)
-      g_loss = -torch.mean(torch.log(gz_output))
-      g_loss.backward()
-      G_optimizer.step()
+      if ((latest_unsupervised_epoch - start_unsupervised_epoch + 1) % args.save_ckpt_interval == 0 or
+        latest_unsupervised_epoch == args.unsupervised_epochs):
+        torch.save(G.state_dict(), '{}/{}{}.pth'.format(args.outdir, G_CKPT_PREFIX, latest_unsupervised_epoch))
+        torch.save(D.state_dict(), '{}/{}{}.pth'.format(args.outdir, D_CKPT_PREFIX, latest_unsupervised_epoch))
 
-      if i % args.log_interval == 0:
-        print('Train Epoch: {} [{}/{} ({:.0f}%)]\nLoss_D: {:.4f}\tLoss_G: {:.4f}'.format(
-              latest_unsupervised_epoch, i * len(x), len(unsupervised_loader.dataset),
-              100. * i / len(unsupervised_loader), d_loss.data[0], g_loss.data[0]))
-      if i % args.output_interval == 0:
-        vutils.save_image(x.data,'{}/real_samples.png'.format(args.outdir))
-        vutils.save_image(gz.data, '{}/fake_samples.png'.format(args.outdir))
-        fake = G(fixed_noise)
-        vutils.save_image(fake.data,
-          '{}/fake_sample_epoch_{}.png'.format(args.outdir, latest_unsupervised_epoch))
-
-    unsupervised_trained = True
-
-  # Save ckpt at last epoch
-  if unsupervised_trained:
-    torch.save(G.state_dict(), '{}/{}{}.pth'.format(args.outdir, G_CKPT_PREFIX, latest_unsupervised_epoch))
-    torch.save(D.state_dict(), '{}/{}{}.pth'.format(args.outdir, D_CKPT_PREFIX, latest_unsupervised_epoch))
+      unsupervised_trained = True
 
 
 ############################
@@ -297,15 +293,24 @@ if not unsupervised_trained and latest_supervised_ckpt is not None:
 else:
   latest_supervised_epoch = 0
 
-if latest_supervised_epoch < args.supervised_epochs:
+start_supervised_epoch = latest_supervised_epoch + 1
+if start_supervised_epoch < args.supervised_epochs + 1:
   print('\n\nTuning model with 3000 labeled data')
+  trainset_labeled = pickle.load(open(args.supervised_training_data, "rb"))
+  validset = pickle.load(open(args.validation_data, "rb"))
+  supervised_loader = torch.utils.data.DataLoader(trainset_labeled,
+    batch_size=args.supervised_batch_size, shuffle=True, **kwargs)
+  valid_loader = torch.utils.data.DataLoader(validset,
+    batch_size=args.test_batch_size, shuffle=True)
   optimizer = optim.SGD(target_params, lr=args.supervised_lr,
     momentum=args.supervised_momentum)
   # optimizer = optim.Adam(D.parameters(), lr=args.supervised_lr)
-  for latest_supervised_epoch in range(latest_supervised_epoch + 1, args.supervised_epochs + 1):
+
+  for latest_supervised_epoch in range(start_supervised_epoch, args.supervised_epochs + 1):
     ############################
     # (3.1) Training
     ###########################
+    D.train()
     for i, (data, target) in enumerate(supervised_loader):
       data = Variable(data if not args.cuda else data.cuda())
       target = Variable(target if not args.cuda else target.cuda())
@@ -322,7 +327,6 @@ if latest_supervised_epoch < args.supervised_epochs:
     ############################
     # (3.2) Evaluate D network with validate data
     ###########################
-    print('\n\nEvaluate model with validate labeled data')
     D.eval()
     test_loss = 0
     correct = 0
@@ -340,8 +344,8 @@ if latest_supervised_epoch < args.supervised_epochs:
         100. * correct / len(valid_loader.dataset)))
 
     ############################
-    # (3.3) Save checkpoint 5 epochs
+    # (3.3) Save checkpoint every save_ckpt_interval epochs
     ###########################
-    if ((latest_supervised_epoch - latest_supervised_epoch - 1) % args.save_ckpt_interval == 0 or
+    if ((latest_supervised_epoch - start_supervised_epoch + 1) % args.save_ckpt_interval == 0 or
       latest_supervised_epoch == args.supervised_epochs):
       torch.save(D.state_dict(), '{}/{}{}.pth'.format(args.outdir, SUPERVISED_CKPT_PREFIX, latest_supervised_epoch))
